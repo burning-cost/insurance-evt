@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "insurance-evt"
+version = "0.1.0"
+description = "Extreme Value Theory for catastrophic insurance claim severity: GPD/GEV fitting, profile likelihood CIs, censored MLE, excess layer pricing, Solvency II reporting"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Burning Cost", email = "pricing.frontier@gmail.com" }
+]
+keywords = [
+    "insurance",
+    "actuarial",
+    "extreme value theory",
+    "EVT",
+    "GPD",
+    "GEV",
+    "Pareto",
+    "catastrophe",
+    "reinsurance",
+    "Solvency II",
+    "claims severity",
+    "tail risk",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.10",
+    "pandas>=1.5",
+    "matplotlib>=3.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/insurance_evt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
