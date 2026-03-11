@@ -70,17 +70,16 @@ class GEVFitter:
     def fit(self) -> GEVFitResult:
         """Fit GEV to block maxima via MLE.
 
+        Uses multiple starting points to avoid local optima. The scipy
+        genextreme.fit() starting point is unreliable on some datasets;
+        moment-based (Gumbel) initialization is more robust.
+
         Returns
         -------
         GEVFitResult
         """
         data = self.block_maxima
         n = len(data)
-
-        # scipy.stats.genextreme: c = -xi (note sign convention)
-        # genextreme(c, loc=mu, scale=sigma) with c = -xi
-        c0, mu0, sigma0 = stats.genextreme.fit(data)
-        xi0 = -c0
 
         def neg_loglik(params):
             xi_, mu_, sigma_ = params
@@ -92,22 +91,59 @@ class GEVFitter:
                 return 1e12
             return -np.sum(lp)
 
-        bounds = [(-2.0, 5.0), (None, None), (1e-6, None)]
-        result = optimize.minimize(
-            neg_loglik,
-            [xi0, mu0, sigma0],
-            method="L-BFGS-B",
-            bounds=bounds,
-            options={"maxiter": 2000, "ftol": 1e-12},
-        )
+        bounds = [(-2.0, 3.0), (None, None), (1e-6, None)]
 
-        xi_mle, mu_mle, sigma_mle = result.x
-        loglik = -result.fun
+        # Moment-based initialization (Gumbel/Frechet starting points are more
+        # reliable than scipy.stats.genextreme.fit which can diverge)
+        data_mean = np.mean(data)
+        data_std = np.std(data, ddof=1)
+        # Gumbel: sigma_0 = std * pi / sqrt(6), mu_0 = mean - gamma * sigma_0
+        sigma_gumbel = data_std * np.pi / np.sqrt(6)
+        mu_gumbel = data_mean - 0.5772 * sigma_gumbel
+
+        starting_points = [
+            [0.0, mu_gumbel, sigma_gumbel],
+            [0.2, mu_gumbel * 0.95, sigma_gumbel * 0.8],
+            [0.1, data_mean * 0.9, data_std * 0.4],
+            [-0.1, mu_gumbel * 1.05, sigma_gumbel * 1.2],
+        ]
+
+        # Try scipy default too (works well when data is well-behaved)
+        try:
+            c_sp, mu_sp, sigma_sp = stats.genextreme.fit(data)
+            xi_sp = -c_sp
+            if -1.5 <= xi_sp <= 2.5 and 0 < sigma_sp < data_std * 10:
+                starting_points.insert(0, [xi_sp, mu_sp, sigma_sp])
+        except Exception:
+            pass
+
+        best_result = None
+        best_ll = -np.inf
+        for p0 in starting_points:
+            try:
+                r = optimize.minimize(
+                    neg_loglik,
+                    p0,
+                    method="L-BFGS-B",
+                    bounds=bounds,
+                    options={"maxiter": 3000, "ftol": 1e-12, "gtol": 1e-8},
+                )
+                if -r.fun > best_ll:
+                    best_ll = -r.fun
+                    best_result = r
+            except Exception:
+                continue
+
+        if best_result is None:
+            raise RuntimeError("GEV MLE failed for all starting points.")
+
+        xi_mle, mu_mle, sigma_mle = best_result.x
+        loglik = -best_result.fun
 
         # Standard errors via numerical Hessian
         from scipy.optimize import approx_fprime
 
-        h = 1e-5
+        h = max(abs(sigma_mle) * 1e-4, 1e-3)  # scale-aware step
 
         def grad(p):
             return approx_fprime(p, neg_loglik, h)
@@ -124,8 +160,15 @@ class GEVFitter:
             xi_se = np.sqrt(max(cov[0, 0], 0))
             mu_se = np.sqrt(max(cov[1, 1], 0))
             sigma_se = np.sqrt(max(cov[2, 2], 0))
+            # Guard against numerical zero SEs
+            if xi_se < 1e-8:
+                xi_se = max(abs(xi_mle) * 0.1, 0.01) / np.sqrt(n)
+            if mu_se < 1e-8:
+                mu_se = sigma_mle / np.sqrt(n)
+            if sigma_se < 1e-8:
+                sigma_se = sigma_mle * 0.1 / np.sqrt(n)
         except np.linalg.LinAlgError:
-            xi_se = abs(xi_mle) / np.sqrt(n)
+            xi_se = max(abs(xi_mle), 0.01) / np.sqrt(n)
             mu_se = sigma_mle / np.sqrt(n)
             sigma_se = sigma_mle / np.sqrt(n)
 
@@ -189,10 +232,9 @@ class GEVFitter:
         x_T_mle = self.return_level(return_period)
 
         def profile_loglik(x_T):
-            """Maximise loglik over (mu, sigma) for fixed return level x_T."""
-            # Express mu in terms of x_T, xi, sigma:
-            # x_T = mu + sigma/xi * (y^(-xi) - 1) where y = -log(1 - 1/T)
-            # So mu = x_T - sigma/xi * (y^(-xi) - 1)
+            """Maximise loglik over (xi, sigma) for fixed return level x_T."""
+            # Return level constraint: x_T = mu + sigma/xi * (y^(-xi) - 1)
+            # Reparametrize: mu = x_T - sigma/xi * (y^(-xi) - 1)
             y = -np.log(1 - 1 / return_period)
 
             def neg_ll_2d(params):
@@ -213,7 +255,7 @@ class GEVFitter:
                 neg_ll_2d,
                 [fit.xi, fit.sigma],
                 method="L-BFGS-B",
-                bounds=[(-2.0, 5.0), (1e-6, None)],
+                bounds=[(-2.0, 3.0), (1e-6, None)],
                 options={"maxiter": 500, "ftol": 1e-12},
             )
             return -r.fun
@@ -221,17 +263,15 @@ class GEVFitter:
         def objective(x_T):
             return profile_loglik(x_T) - cutoff
 
-        sigma_xT = fit.xi_se * abs(x_T_mle) + fit.sigma_mle_approx_se(x_T_mle)
-        lo_start = x_T_mle - 5 * (fit.sigma + fit.xi_se * abs(x_T_mle))
+        lo_start = max(x_T_mle - 5 * (fit.sigma + fit.xi_se * abs(x_T_mle)), 0.0)
         hi_start = x_T_mle + 10 * (fit.sigma + fit.xi_se * abs(x_T_mle))
-        lo_start = max(lo_start, 0.0)
 
         try:
-            lo = optimize.brentq(objective, lo_start, x_T_mle, xtol=1e-3, maxiter=100)
+            lo = optimize.brentq(objective, lo_start, x_T_mle - 1, xtol=1e-3, maxiter=100)
         except ValueError:
             lo = lo_start
         try:
-            hi = optimize.brentq(objective, x_T_mle, hi_start, xtol=1e-3, maxiter=100)
+            hi = optimize.brentq(objective, x_T_mle + 1, hi_start, xtol=1e-3, maxiter=100)
         except ValueError:
             hi = hi_start
 

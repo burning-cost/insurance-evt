@@ -48,12 +48,18 @@ def small_excesses(rng):
 
 
 @pytest.fixture(scope="module")
-def gev_maxima(rng):
-    """Annual maxima from GEV(xi=0.2, mu=1e6, sigma=300_000)."""
+def gev_maxima():
+    """Annual maxima from GEV(xi=0.2, mu=1e6, sigma=300_000).
+
+    Uses a dedicated rng (not the shared one) to ensure reproducibility
+    regardless of fixture ordering.
+    """
+    rng_gev = np.random.default_rng(1234)
     xi_true, mu_true, sigma_true = 0.2, 1_000_000, 300_000
-    c = -xi_true  # scipy convention
-    maxima = genextreme.rvs(c, loc=mu_true, scale=sigma_true, size=50, random_state=rng)
-    maxima = np.abs(maxima)  # ensure positive
+    c = -xi_true  # scipy sign convention
+    maxima = genextreme.rvs(c, loc=mu_true, scale=sigma_true, size=50, random_state=rng_gev)
+    # GEV with mu=1e6, sigma=300k should be far from zero; clip for safety
+    maxima = np.maximum(maxima, 1.0)
     return maxima, xi_true, mu_true, sigma_true
 
 

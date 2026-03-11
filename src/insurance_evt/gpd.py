@@ -144,14 +144,20 @@ def _fisher_information_se(
         ei = np.zeros(2)
         ei[i] = h
         hess[:, i] = (grad(np.array(params) + ei) - grad(np.array(params) - ei)) / (2 * h)
+    xi_mle, sigma_mle = params
+    n = len(kwargs.get("excesses", [1]))
     try:
         cov = np.linalg.inv(hess)
         xi_se = np.sqrt(max(cov[0, 0], 0))
         sigma_se = np.sqrt(max(cov[1, 1], 0))
+        # Guard against numerical zero: minimum plausible SE
+        if xi_se < 1e-10:
+            xi_se = max(abs(xi_mle) * 0.05, 0.01) / np.sqrt(max(n, 1))
+        if sigma_se < 1e-10:
+            sigma_se = sigma_mle * 0.05 / np.sqrt(max(n, 1))
     except np.linalg.LinAlgError:
-        n = len(kwargs.get("excesses", [1]))
-        xi_se = abs(params[0]) / np.sqrt(n)
-        sigma_se = abs(params[1]) / np.sqrt(n)
+        xi_se = max(abs(xi_mle), 0.01) / np.sqrt(max(n, 1))
+        sigma_se = sigma_mle / np.sqrt(max(n, 1))
     return xi_se, sigma_se
 
 
